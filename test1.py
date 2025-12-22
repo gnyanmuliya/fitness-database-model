@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 
 # ============ CONFIGURATION & CONSTANTS ============
-DATASET_FILE = "Newdata 1.xlsx - Sheet1.csv"
+DATASET_FILE = "Newdata 1.csv"
 
 # CONSTANTS 
 PRIMARY_GOALS = ["Weight Loss", "Muscle Gain", "Endurance", "Flexibility", "General Fitness", "Weight Maintenance"]
