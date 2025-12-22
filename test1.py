@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 
 # ============ CONFIGURATION & CONSTANTS ============
-DATASET_FILE = "Newdata 1.csv"
+DATASET_FILE = "Newdata 1.xlsx - Sheet1.csv"
 
 # CONSTANTS 
 PRIMARY_GOALS = ["Weight Loss", "Muscle Gain", "Endurance", "Flexibility", "General Fitness", "Weight Maintenance"]
@@ -301,18 +301,6 @@ def generate_workout_json(df, profile):
     base_pool = filter_exercises(df, profile)
     if base_pool.empty: base_pool = df.copy() 
     
-<<<<<<< HEAD
-    # --- SAFETY POOL FOR WARMUP/COOLDOWN ---
-    # Strictly exclude 'Strength', 'Hypertrophy', 'Power' from Warmup/Cooldown pools
-    # We want only Mobility, Stretching, Cardio, Yoga, etc.
-    safe_pool = base_pool[~base_pool['Primary Category'].str.contains('Strength|Hypertrophy|Power', case=False)]
-    
-    # If safe_pool is somehow empty (unlikely unless dataset is tiny), fall back to base but warn
-    if safe_pool.empty:
-        safe_pool = base_pool # Last resort
-    
-    # 2. Global Tracking
-=======
     # Create Specific Pools
     # SAFE POOL: NO Strength/Hypertrophy/Power (For Warmup/Cool)
     safe_pool = base_pool[~base_pool['Primary Category'].str.contains('Strength|Hypertrophy|Power', case=False)]
@@ -327,7 +315,6 @@ def generate_workout_json(df, profile):
     if cardio_pool.empty: cardio_pool = safe_pool
 
     # 2. Logic Setup
->>>>>>> b357884 (Updated logic and bug fixes)
     used_exercise_names = set()
     days = profile['days_per_week']
     num_days = len(days)
@@ -350,20 +337,11 @@ def generate_workout_json(df, profile):
             "safety_notes": ["Stay hydrated", "Monitor RPE"]
         }
 
-<<<<<<< HEAD
-        # --- WARMUP (Strict 3, uses safe_pool) ---
-        
-        # 1. Cardio
-        cardio_pool = safe_pool[safe_pool['Primary Category'].str.contains('Cardio|Warmup', case=False)]
-        # If specific cardio missing, take any from safe_pool (which is definitely not strength)
-        cardio_ex = cardio_pool.sample(1).iloc[0] if not cardio_pool.empty else safe_pool.sample(1).iloc[0]
-=======
         # --- 1. WARMUP (Strict Structure: Cardio -> Mobility) ---
         # Slot 1: Low-Impact Cardio (3-5 min) - Pulse Raiser
         # Strictly exclude Strength
         wp_cardio = safe_pool[safe_pool['Primary Category'].str.contains('Cardio|Warmup', case=False)]
         if wp_cardio.empty: wp_cardio = safe_pool
->>>>>>> b357884 (Updated logic and bug fixes)
         
         w1 = wp_cardio.sample(1).iloc[0]
         day_plan['warmup'].append({
@@ -379,18 +357,6 @@ def generate_workout_json(df, profile):
             "safety_cue": "Start slow, build pace"
         })
 
-<<<<<<< HEAD
-        # 2. Upper Dynamic
-        up_pool = safe_pool[
-            (safe_pool['Primary Category'].str.contains('Mobility|Warmup', case=False)) & 
-            (safe_pool['Body Region'].str.contains('Upper|Full', case=False)) &
-            (~safe_pool['Exercise Name'].isin(used_exercise_names))
-        ]
-        if up_pool.empty: up_pool = safe_pool # Fallback to SAFE pool, not base
-        
-        up_ex = up_pool.sample(1).iloc[0]
-        used_exercise_names.add(up_ex['Exercise Name'])
-=======
         # Slot 2: Upper Mobility (Dynamic)
         wp_upper = safe_pool[
             (safe_pool['Primary Category'].str.contains('Mobility|Stretch', case=False)) & 
@@ -400,7 +366,6 @@ def generate_workout_json(df, profile):
         if wp_upper.empty: wp_upper = safe_pool
         w2 = wp_upper.sample(1).iloc[0]
         used_exercise_names.add(w2['Exercise Name'])
->>>>>>> b357884 (Updated logic and bug fixes)
         
         day_plan['warmup'].append({
             "name": w2['Exercise Name'],
@@ -414,19 +379,6 @@ def generate_workout_json(df, profile):
             "met_value": float(w2.get('MET value', 2.5)),
             "safety_cue": "Focus on joint movement"
         })
-<<<<<<< HEAD
-
-        # 3. Lower Dynamic
-        low_pool = safe_pool[
-            (safe_pool['Primary Category'].str.contains('Mobility|Warmup', case=False)) & 
-            (safe_pool['Body Region'].str.contains('Lower|Full', case=False)) &
-            (~safe_pool['Exercise Name'].isin(used_exercise_names))
-        ]
-        if low_pool.empty: low_pool = safe_pool # Fallback to SAFE pool
-        
-        low_ex = low_pool.sample(1).iloc[0]
-        used_exercise_names.add(low_ex['Exercise Name'])
-=======
         
         # Slot 3: Lower Mobility (Dynamic)
         wp_lower = safe_pool[
@@ -437,7 +389,6 @@ def generate_workout_json(df, profile):
         if wp_lower.empty: wp_lower = safe_pool
         w3 = wp_lower.sample(1).iloc[0]
         used_exercise_names.add(w3['Exercise Name'])
->>>>>>> b357884 (Updated logic and bug fixes)
         
         day_plan['warmup'].append({
             "name": w3['Exercise Name'],
@@ -452,56 +403,6 @@ def generate_workout_json(df, profile):
             "safety_cue": "Dynamic stretch, don't hold"
         })
 
-<<<<<<< HEAD
-        # --- MAIN WORKOUT (Standard Logic) ---
-        if is_split:
-            focus = target_parts[day_idx % len(target_parts)]
-            cat_title = f"{focus.title()} Focus"
-            # Main pool comes from BASE (can include strength)
-            main_pool = base_pool[base_pool['Body Region'].str.contains(focus, case=False)]
-        else:
-            cat_title = "Full Body Circuit"
-            main_pool = base_pool
-            
-        day_plan['main_workout_category'] = cat_title
-        
-        # Strictly enforce Strength/Hypertrophy/Power for main workout
-        main_pool = main_pool[main_pool['Primary Category'].str.contains('Strength|Hypertrophy|Power', case=False)]
-        main_pool = main_pool[~main_pool['Exercise Name'].isin(used_exercise_names)]
-        
-        count = min(max_main, len(main_pool))
-        if count > 0:
-            selected_main = main_pool.sample(count)
-            for _, row in selected_main.iterrows():
-                used_exercise_names.add(row['Exercise Name'])
-                day_plan['main_workout'].append({
-                    "name": row['Exercise Name'],
-                    "benefit": row.get('Health benefit', 'Strength'),
-                    "steps": str(row.get('Steps to perform', '')).split('\n'),
-                    "sets": t_sets,
-                    "reps": t_reps,
-                    "intensity_rpe": f"RPE {t_rpe}",
-                    "rest": t_rest,
-                    "equipment": row.get('Equipments', 'Bodyweight'),
-                    "met_value": float(row.get('MET value', 4.0)),
-                    "safety_cue": row.get('Safety cue', 'Check form')
-                })
-
-        # --- COOLDOWN (Strict 3, uses safe_pool) ---
-        cool_pool = safe_pool[
-            (safe_pool['Primary Category'].str.contains('Stretching|Yoga|Cool', case=False)) &
-            (~safe_pool['Exercise Name'].isin(used_exercise_names))
-        ]
-        # Fallback to general stretching in SAFE pool
-        if len(cool_pool) < 3: 
-            cool_pool = safe_pool[safe_pool['Primary Category'].str.contains('Stretching|Yoga|Cool', case=False)]
-        
-        # If still empty (very rare), take anything from safe_pool
-        if cool_pool.empty: cool_pool = safe_pool
-
-        selected_cool = cool_pool.sample(min(3, len(cool_pool)))
-        for _, row in selected_cool.iterrows():
-=======
         # --- 2. MAIN WORKOUT (Context Aware) ---
         target_count = 5 # Standard 4-6 exercises
         
@@ -589,7 +490,6 @@ def generate_workout_json(df, profile):
         static_selection = cp_static.sample(min(2, len(cp_static)))
         for _, row in static_selection.iterrows():
             used_exercise_names.add(row['Exercise Name'])
->>>>>>> b357884 (Updated logic and bug fixes)
             day_plan['cooldown'].append({
                 "name": row['Exercise Name'],
                 "benefit": "Static Flexibility & Recovery",
