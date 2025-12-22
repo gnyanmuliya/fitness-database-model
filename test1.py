@@ -10,7 +10,7 @@ from datetime import datetime
 DATASET_FILE = "Newdata 1.csv"
 
 # CONSTANTS 
-PRIMARY_GOALS = ["Weight Loss", "Weight Gain", "Weight Maintenance"]
+PRIMARY_GOALS = ["Weight Loss", "Muscle Gain", "Endurance", "Flexibility", "General Fitness", "Weight Maintenance"]
 SECONDARY_GOALS = ["Stress Reduction", "Sleep Improvement", "Athletic Performance", "Posture Correction"]
 MEDICAL_CONDITIONS_OPTIONS = ["None", "Diabetes", "Hypertension", "Asthma", "Arthritis", "Back Pain", "Knee Pain"]
 
@@ -220,9 +220,18 @@ def generate_workout_json(df, profile):
     """Core Algorithm: Dataset -> JSON Structure."""
     schedule_output = {}
     
-    # 1. Base Filter
+    # 1. Base Filter (Demographics, Equipment, Injury)
     base_pool = filter_exercises(df, profile)
     if base_pool.empty: base_pool = df.copy() 
+    
+    # --- SAFETY POOL FOR WARMUP/COOLDOWN ---
+    # Strictly exclude 'Strength', 'Hypertrophy', 'Power' from Warmup/Cooldown pools
+    # We want only Mobility, Stretching, Cardio, Yoga, etc.
+    safe_pool = base_pool[~base_pool['Primary Category'].str.contains('Strength|Hypertrophy|Power', case=False)]
+    
+    # If safe_pool is somehow empty (unlikely unless dataset is tiny), fall back to base but warn
+    if safe_pool.empty:
+        safe_pool = base_pool # Last resort
     
     # 2. Global Tracking
     used_exercise_names = set()
@@ -255,10 +264,12 @@ def generate_workout_json(df, profile):
             "safety_notes": ["Stay hydrated", "Focus on form"]
         }
 
-        # --- WARMUP (Strict 3) ---
+        # --- WARMUP (Strict 3, uses safe_pool) ---
+        
         # 1. Cardio
-        cardio_pool = base_pool[base_pool['Primary Category'].str.contains('Cardio|Warmup', case=False)]
-        cardio_ex = cardio_pool.sample(1).iloc[0] if not cardio_pool.empty else base_pool.sample(1).iloc[0]
+        cardio_pool = safe_pool[safe_pool['Primary Category'].str.contains('Cardio|Warmup', case=False)]
+        # If specific cardio missing, take any from safe_pool (which is definitely not strength)
+        cardio_ex = cardio_pool.sample(1).iloc[0] if not cardio_pool.empty else safe_pool.sample(1).iloc[0]
         
         day_plan['warmup'].append({
             "name": cardio_ex['Exercise Name'],
@@ -275,12 +286,13 @@ def generate_workout_json(df, profile):
         })
 
         # 2. Upper Dynamic
-        up_pool = base_pool[
-            (base_pool['Primary Category'].str.contains('Mobility|Warmup', case=False)) & 
-            (base_pool['Body Region'].str.contains('Upper|Full', case=False)) &
-            (~base_pool['Exercise Name'].isin(used_exercise_names))
+        up_pool = safe_pool[
+            (safe_pool['Primary Category'].str.contains('Mobility|Warmup', case=False)) & 
+            (safe_pool['Body Region'].str.contains('Upper|Full', case=False)) &
+            (~safe_pool['Exercise Name'].isin(used_exercise_names))
         ]
-        if up_pool.empty: up_pool = base_pool
+        if up_pool.empty: up_pool = safe_pool # Fallback to SAFE pool, not base
+        
         up_ex = up_pool.sample(1).iloc[0]
         used_exercise_names.add(up_ex['Exercise Name'])
         
@@ -298,12 +310,13 @@ def generate_workout_json(df, profile):
         })
 
         # 3. Lower Dynamic
-        low_pool = base_pool[
-            (base_pool['Primary Category'].str.contains('Mobility|Warmup', case=False)) & 
-            (base_pool['Body Region'].str.contains('Lower|Full', case=False)) &
-            (~base_pool['Exercise Name'].isin(used_exercise_names))
+        low_pool = safe_pool[
+            (safe_pool['Primary Category'].str.contains('Mobility|Warmup', case=False)) & 
+            (safe_pool['Body Region'].str.contains('Lower|Full', case=False)) &
+            (~safe_pool['Exercise Name'].isin(used_exercise_names))
         ]
-        if low_pool.empty: low_pool = base_pool
+        if low_pool.empty: low_pool = safe_pool # Fallback to SAFE pool
+        
         low_ex = low_pool.sample(1).iloc[0]
         used_exercise_names.add(low_ex['Exercise Name'])
         
@@ -320,10 +333,11 @@ def generate_workout_json(df, profile):
             "safety_cue": low_ex.get('Safety cue', 'Smooth movement')
         })
 
-        # --- MAIN WORKOUT ---
+        # --- MAIN WORKOUT (Standard Logic) ---
         if is_split:
             focus = target_parts[day_idx % len(target_parts)]
             cat_title = f"{focus.title()} Focus"
+            # Main pool comes from BASE (can include strength)
             main_pool = base_pool[base_pool['Body Region'].str.contains(focus, case=False)]
         else:
             cat_title = "Full Body Circuit"
@@ -331,6 +345,7 @@ def generate_workout_json(df, profile):
             
         day_plan['main_workout_category'] = cat_title
         
+        # Strictly enforce Strength/Hypertrophy/Power for main workout
         main_pool = main_pool[main_pool['Primary Category'].str.contains('Strength|Hypertrophy|Power', case=False)]
         main_pool = main_pool[~main_pool['Exercise Name'].isin(used_exercise_names)]
         
@@ -352,13 +367,18 @@ def generate_workout_json(df, profile):
                     "safety_cue": row.get('Safety cue', 'Check form')
                 })
 
-        # --- COOLDOWN (Strict 3) ---
-        cool_pool = base_pool[
-            (base_pool['Primary Category'].str.contains('Stretching|Yoga|Cool', case=False)) &
-            (~base_pool['Exercise Name'].isin(used_exercise_names))
+        # --- COOLDOWN (Strict 3, uses safe_pool) ---
+        cool_pool = safe_pool[
+            (safe_pool['Primary Category'].str.contains('Stretching|Yoga|Cool', case=False)) &
+            (~safe_pool['Exercise Name'].isin(used_exercise_names))
         ]
-        if len(cool_pool) < 3: cool_pool = base_pool[base_pool['Primary Category'].str.contains('Stretching', case=False)]
+        # Fallback to general stretching in SAFE pool
+        if len(cool_pool) < 3: 
+            cool_pool = safe_pool[safe_pool['Primary Category'].str.contains('Stretching|Yoga|Cool', case=False)]
         
+        # If still empty (very rare), take anything from safe_pool
+        if cool_pool.empty: cool_pool = safe_pool
+
         selected_cool = cool_pool.sample(min(3, len(cool_pool)))
         for _, row in selected_cool.iterrows():
             day_plan['cooldown'].append({
