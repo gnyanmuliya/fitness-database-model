@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 
 # ============ CONFIGURATION & CONSTANTS ============
+# [UPDATE] Switched to the new dataset file provided
 DATASET_FILE = "Newdata 1.csv"
 
 # CONSTANTS 
@@ -35,9 +36,10 @@ def load_data(filepath):
         df.columns = [c.strip().replace('\ufeff', '') for c in df.columns]
         
         # 2. Smart Column Renaming (Handle case sensitivity issues)
-        # Dictionary of {standard_name: [possible_variations]}
         column_mapping = {
             'Physical limitations': ['physical limitations', 'Physical Limitations', 'limitations', 'Physical Limitation', 'injuries'],
+            # [UPDATE] Added new column mapping
+            'is_not_suitable_for': ['is_not_suitable_for', 'Is Not Suitable For', 'Not Suitable For', 'Medical Contraindications'],
             'Equipments': ['Equipment', 'equipment', 'equipments'],
             'Exercise Name': ['Exercise name', 'exercise name', 'Name', 'name'],
             'Age Suitability': ['Age suitability', 'Age', 'age'],
@@ -57,7 +59,8 @@ def load_data(filepath):
                         break
         
         # 3. Critical Failsafe: Ensure columns exist to prevent KeyError
-        required_cols = ['Physical limitations', 'Equipments', 'Exercise Name', 'Primary Category', 'Body Region', 'Age Suitability', 'MET value', 'Goal', 'Safety cue']
+        # [UPDATE] Added 'is_not_suitable_for' to required columns
+        required_cols = ['Physical limitations', 'is_not_suitable_for', 'Equipments', 'Exercise Name', 'Primary Category', 'Body Region', 'Age Suitability', 'MET value', 'Goal', 'Safety cue']
         for col in required_cols:
             if col not in df.columns:
                 # Create dummy column if missing
@@ -66,7 +69,8 @@ def load_data(filepath):
         # 4. Data Type Conversion
         df['MET value'] = pd.to_numeric(df['MET value'], errors='coerce').fillna(3.0)
         
-        text_cols = ['Age Suitability', 'Goal', 'Primary Category', 'Body Region', 'Equipments', 'Fitness Level', 'Physical limitations', 'Safety cue', 'Exercise Name']
+        # [UPDATE] Added new column to text conversion list
+        text_cols = ['Age Suitability', 'Goal', 'Primary Category', 'Body Region', 'Equipments', 'Fitness Level', 'Physical limitations', 'is_not_suitable_for', 'Safety cue', 'Exercise Name']
         for col in text_cols:
             if col in df.columns:
                 df[col] = df[col].fillna('None').astype(str)
@@ -115,7 +119,7 @@ def filter_exercises(df, profile):
             return True
         filtered = filtered[filtered['Equipments'].apply(is_equipment_compatible)]
 
-    # 3. INJURY FILTER
+    # 3. MEDICAL & INJURY FILTER
     user_conditions = profile.get('medical_conditions', [])
     user_limitations_text = profile.get('physical_limitation', '').lower()
     
@@ -125,7 +129,12 @@ def filter_exercises(df, profile):
     if avoid_terms:
         for term in avoid_terms:
             if len(term) < 4: continue 
-            # Safe checking for column existence (handled by load_data, but double check)
+            
+            # [UPDATE] Filter against the new 'is_not_suitable_for' column
+            if 'is_not_suitable_for' in filtered.columns:
+                filtered = filtered[~filtered['is_not_suitable_for'].str.contains(term, case=False, na=False)]
+                
+            # Filter against existing 'Physical limitations' column
             if 'Physical limitations' in filtered.columns:
                 filtered = filtered[~filtered['Physical limitations'].str.contains(term, case=False, na=False)]
 
