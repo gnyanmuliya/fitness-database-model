@@ -29,10 +29,12 @@ st.set_page_config(page_title="FriskaAI Fitness Coach", page_icon="💪", layout
 @st.cache_data
 def load_data(filepath):
     try:
-        # Load CSV
-        df = pd.read_csv(filepath)
+        # [FIX] Use engine='python' to handle multi-line quoted fields (like 'Steps to perform')
+        # [FIX] Added encoding='utf-8-sig' to automatically handle BOM if present
+        df = pd.read_csv(filepath, engine='python', encoding='utf-8-sig', on_bad_lines='skip')
         
-        # 1. Clean Headers (Remove BOM, strip spaces)
+        # 1. Clean Headers (Strip spaces)
+        # Note: encoding='utf-8-sig' above handles the BOM (\ufeff), but keeping this doesn't hurt
         df.columns = [c.strip().replace('\ufeff', '') for c in df.columns]
         
         # 2. Smart Column Renaming (Handle case sensitivity issues)
