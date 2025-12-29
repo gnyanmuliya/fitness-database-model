@@ -29,8 +29,13 @@ st.set_page_config(page_title="FriskaAI Fitness Coach", page_icon="💪", layout
 @st.cache_data
 def load_data(filepath):
     try:
-        # Load CSV
-        df = pd.read_csv(filepath)
+        # [FIX] Added on_bad_lines='skip' to handle rows with extra commas (formatting errors)
+        # Using engine='python' is more robust for files with mixed separators
+        try:
+            df = pd.read_csv(filepath, on_bad_lines='skip')
+        except:
+            # Fallback for older pandas versions or engine issues
+            df = pd.read_csv(filepath, error_bad_lines=False, engine='python')
         
         # 1. Clean Headers (Remove BOM, strip spaces)
         df.columns = [c.strip().replace('\ufeff', '') for c in df.columns]
