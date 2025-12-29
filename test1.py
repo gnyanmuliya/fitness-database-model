@@ -10,7 +10,7 @@ from datetime import datetime
 DATASET_FILE = "Newdata 1.csv"
 
 # CONSTANTS 
-PRIMARY_GOALS = ["Weight Loss", "Muscle Gain", "Endurance", "Flexibility", "General Fitness", "Weight Maintenance"]
+PRIMARY_GOALS = ["Weight Loss", "Weight Gain", "Weight Maintenance"]
 SECONDARY_GOALS = ["Stress Reduction", "Sleep Improvement", "Athletic Performance", "Posture Correction"]
 MEDICAL_CONDITIONS_OPTIONS = ["None", "Diabetes", "Hypertension", "Asthma", "Arthritis", "Back Pain", "Knee Pain"]
 
@@ -28,10 +28,11 @@ st.set_page_config(page_title="FriskaAI Fitness Coach", page_icon="💪", layout
 @st.cache_data
 def load_data(filepath):
     try:
-        # [FIX] Use engine='python' for robust parsing
+        # [FIX] Use engine='python' to handle complex quoted fields with newlines
+        # [FIX] on_bad_lines='skip' prevents the "Expected 18 fields..." crash
         df = pd.read_csv(filepath, engine='python', on_bad_lines='skip')
         
-        # 1. Clean Headers
+        # 1. Clean Headers (Remove BOM, strip spaces)
         df.columns = [c.strip().replace('\ufeff', '') for c in df.columns]
         
         # 2. Smart Column Renaming
@@ -55,7 +56,7 @@ def load_data(filepath):
                         df.rename(columns={match: standard}, inplace=True)
                         break
         
-        # 3. Critical Failsafe
+        # 3. Critical Failsafe for missing columns
         required_cols = ['Physical limitations', 'is_not_suitable_for', 'Tags', 'Equipments', 'Exercise Name', 'Primary Category', 'Body Region', 'Age Suitability', 'MET value', 'Goal', 'Safety cue']
         for col in required_cols:
             if col not in df.columns:
@@ -225,19 +226,22 @@ def generate_workout_json(df, profile):
     else:
         max_main, w_dur, c_dur = 5, "10-12 mins", "8-10 mins"
 
-    # [FIX] POOL SEGREGATION
+    # [FIX] POOL SEGREGATION & TAG HANDLING
+    # 1. Cooldown Pool (Strictly Tagged)
     cooldown_pool = base_pool[base_pool['Tags'].str.contains('Cooldown', case=False, na=False)]
     
-    # Exclude Cooldown tags from active pool to reserve them
+    # 2. Active Pool (Exclude Cooldown tags to prevent wasting them in main workout)
     active_pool = base_pool[~base_pool['Tags'].str.contains('Cooldown', case=False, na=False)]
-    if active_pool.empty: active_pool = base_pool 
+    if active_pool.empty: active_pool = base_pool # Fallback
 
+    # 3. Strength vs Cardio Pools
     strength_pool = active_pool[active_pool['Primary Category'].str.contains('Strength|Hypertrophy|Power', case=False, na=False)]
     if strength_pool.empty: strength_pool = active_pool
     
     cardio_pool = active_pool[active_pool['Primary Category'].str.contains('Cardio|HIIT', case=False, na=False)]
     if cardio_pool.empty: cardio_pool = active_pool
 
+    # 4. Safe Pool (No heavy strength)
     safe_pool = active_pool[~active_pool['Primary Category'].str.contains('Strength|Hypertrophy|Power', case=False, na=False)]
     if safe_pool.empty: safe_pool = active_pool
 
@@ -264,10 +268,10 @@ def generate_workout_json(df, profile):
             "sets": "1", "reps": "3 mins" if "15" in duration_str else "5 mins", "rest": "None", "met_value": float(w1.get('MET value', 4.0))
         })
 
-        # 2. Mobility
+        # 2. Mobility (Check for duplicates)
         avail_mob = safe_pool[safe_pool['Primary Category'].str.contains('Mobility|Stretch', case=False, na=False)]
         avail_mob = avail_mob[~avail_mob['Exercise Name'].isin(used_exercise_names)]
-        if avail_mob.empty: avail_mob = safe_pool 
+        if avail_mob.empty: avail_mob = safe_pool # Intelligent Reset if pool empty
         
         w2 = avail_mob.sample(1).iloc[0]
         used_exercise_names.add(w2['Exercise Name'])
@@ -279,15 +283,21 @@ def generate_workout_json(df, profile):
         # --- MAIN WORKOUT ---
         current_pool = cardio_pool if "Cardio" in day_type else strength_pool
         
+        # Apply Split Filter
         if "Cardio" not in day_type:
             if "Upper" in day_type: current_pool = current_pool[current_pool['Body Region'].str.contains('Upper', case=False, na=False)]
             elif "Lower" in day_type: current_pool = current_pool[current_pool['Body Region'].str.contains('Lower', case=False, na=False)]
         
+        # Filter Used exercises
         avail_main = current_pool[~current_pool['Exercise Name'].isin(used_exercise_names)]
         
-        # [FIX] Reset Pool Logic
-        if len(avail_main) < max_main: avail_main = current_pool 
-        if len(avail_main) < max_main: avail_main = pd.concat([avail_main, strength_pool]).drop_duplicates()
+        # [FIX] Smart Repetition: If filtered pool is too small, reset to full category pool
+        if len(avail_main) < max_main:
+            avail_main = current_pool # Reset used filter
+        
+        # If STILL too small (small dataset), fallback to general strength
+        if len(avail_main) < max_main:
+            avail_main = pd.concat([avail_main, strength_pool]).drop_duplicates()
 
         selection = avail_main.sample(min(max_main, len(avail_main)))
         
@@ -308,9 +318,10 @@ def generate_workout_json(df, profile):
             "sets": "1", "reps": "1 min", "rest": "None", "met_value": 1.5
         })
         
+        # Pick from Cooldown Tagged Pool
         avail_cool = cooldown_pool[~cooldown_pool['Exercise Name'].isin(used_exercise_names)]
-        if avail_cool.empty: avail_cool = cooldown_pool 
-        if avail_cool.empty: avail_cool = safe_pool 
+        if avail_cool.empty: avail_cool = cooldown_pool # Reset
+        if avail_cool.empty: avail_cool = safe_pool # Fallback
         
         num_c = 1 if max_main <= 2 else 2
         c_sel = avail_cool.sample(min(num_c, len(avail_cool)))
@@ -327,70 +338,23 @@ def generate_workout_json(df, profile):
         
     return schedule_output
 
-def display_interactive_workout_day(day_name: str, plan_json: dict, profile: dict, advisor: FitnessAdvisor):
-    weight_kg = profile.get('weight_kg', 70.0)
-    
-    if day_name not in st.session_state.logged_performance:
-        st.session_state.logged_performance[day_name] = {}
-
-    def render_section(section_data, title, key):
-        if not section_data: return
-        st.markdown(f"### {title}")
-        for idx, ex in enumerate(section_data):
-            ex_id = f"{key}_{idx+1}"
-            
-            if ex_id not in st.session_state.logged_performance[day_name]:
-                st.session_state.logged_performance[day_name][ex_id] = {'actual_sets': 0, 'actual_reps': 0}
-            
-            planned_sets = str(ex.get('sets', '1'))
-            planned_reps = str(ex.get('reps', '10'))
-            
-            try: d_sets = int(re.search(r'\d+', planned_sets).group())
-            except: d_sets = 1
-            
-            try: 
-                d_reps = int(re.search(r'\d+', planned_reps).group())
-                u_label = "Seconds" if 'sec' in planned_reps or 'min' in planned_reps else "Reps"
-            except: 
-                d_reps = 10
-                u_label = "Reps"
-
-            with st.container():
-                c1, c2, c3 = st.columns([3, 1.5, 1.5])
-                with c1:
-                    st.markdown(f"**{ex['name']}**")
-                    col_s, col_r = st.columns(2)
-                    with col_s: st.write(f"**Sets:** {planned_sets}")
-                    with col_r: st.write(f"**Target:** {planned_reps}")
-                    with st.expander("Details"):
-                        st.write(ex.get('steps', []))
-                        st.warning(f"Safety: {ex.get('safety_cue', '')}")
-                with c2:
-                    val_s = st.number_input("Sets", 0, 10, d_sets, key=f"s_{day_name}_{ex_id}")
-                    val_r = st.number_input(u_label, 0, 300, d_reps, key=f"r_{day_name}_{ex_id}")
-                    st.session_state.logged_performance[day_name][ex_id] = {'actual_sets': val_s, 'actual_reps': val_r}
-                with c3:
-                    burned = calculate_performance_calorie_burn(ex_id, day_name, advisor, weight_kg)
-                    st.metric("🔥 Burned", f"{int(burned)} kcal")
-                st.divider()
-
-    render_section(plan_json.get('warmup', []), "🔥 Warmup", "warmup")
-    render_section(plan_json.get('main_workout', []), "💪 Main Workout", "main")
-    render_section(plan_json.get('cooldown', []), "🧘 Cooldown", "cooldown")
-
-# ============ APP UI EXECUTION ============
+# ============ APP UI (EXACTLY AS PROVIDED) ============
 
 # Initialize Session State
 if 'user_profile' not in st.session_state: st.session_state.user_profile = {}
 if 'all_json_plans' not in st.session_state: st.session_state.all_json_plans = {}
 if 'logged_performance' not in st.session_state: st.session_state.logged_performance = {}
 
+# --- FORM START ---
 with st.form("fitness_form"):
         
+        # BMI Placeholder initialization
         bmi_placeholder = st.empty()
+        
+        # --- Default/Current Values from Session State ---
         profile = st.session_state.user_profile
         
-        # Calculate initial/re-run BMI
+        # Calculate initial/re-run BMI for display in the placeholder
         current_weight_kg = profile.get('weight_kg', 70.0)
         current_height_cm = profile.get('height_cm', 170.0)
         current_bmi = 0
