@@ -11,7 +11,7 @@ from datetime import datetime
 DATASET_FILE = "Newdata 1.csv"
 
 # CONSTANTS 
-PRIMARY_GOALS = ["Weight Loss", "Weight Gain", "Weight Maintenance"]
+PRIMARY_GOALS = ["Weight Loss", "Muscle Gain", "Endurance", "Flexibility", "General Fitness", "Weight Maintenance"]
 SECONDARY_GOALS = ["Stress Reduction", "Sleep Improvement", "Athletic Performance", "Posture Correction"]
 MEDICAL_CONDITIONS_OPTIONS = ["None", "Diabetes", "Hypertension", "Asthma", "Arthritis", "Back Pain", "Knee Pain"]
 
