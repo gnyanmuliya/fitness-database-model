@@ -8,7 +8,7 @@ from datetime import datetime
 
 # ============ CONFIGURATION & CONSTANTS ============
 # [FIX] Updated to the new dataset filename
-DATASET_FILE = "Dataset 1.csv"
+DATASET_FILE = "Newdata 1.csv"
 
 # CONSTANTS 
 PRIMARY_GOALS = ["Weight Loss", "Weight Gain", "Weight Maintenance"]
