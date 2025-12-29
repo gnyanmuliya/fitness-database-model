@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 
 # ============ CONFIGURATION & CONSTANTS ============
-# [FIX] Updated to the new dataset filename
+# [UPDATE] Switched to the new dataset file provided
 DATASET_FILE = "Newdata 1.csv"
 
 # CONSTANTS 
@@ -29,9 +29,8 @@ st.set_page_config(page_title="FriskaAI Fitness Coach", page_icon="💪", layout
 @st.cache_data
 def load_data(filepath):
     try:
-        # [FIX] Use engine='python' to handle multi-line quoted fields and trailing commas
-        # [FIX] on_bad_lines='skip' ensures the app doesn't crash on a single bad row
-        df = pd.read_csv(filepath, engine='python', encoding='utf-8-sig', on_bad_lines='skip')
+        # Load CSV
+        df = pd.read_csv(filepath)
         
         # 1. Clean Headers (Remove BOM, strip spaces)
         df.columns = [c.strip().replace('\ufeff', '') for c in df.columns]
@@ -53,7 +52,6 @@ def load_data(filepath):
         for standard, variations in column_mapping.items():
             if standard not in df.columns:
                 for v in variations:
-                    # Case-insensitive check against actual columns
                     match = next((col for col in df.columns if col.lower() == v.lower()), None)
                     if match:
                         df.rename(columns={match: standard}, inplace=True)
@@ -152,15 +150,15 @@ class FitnessAdvisor:
         return 3.5
 
 def calculate_performance_calorie_burn(exercise_index: str, day_name: str, advisor: FitnessAdvisor, weight_kg: float) -> float:
-    """Calculates real-time calorie burn."""
+    """Calculates real-time calorie burn with improved Duration vs Reps handling."""
     if 'logged_performance' not in st.session_state or day_name not in st.session_state.logged_performance:
         return 0.0
 
     logged_data = st.session_state.logged_performance.get(day_name, {}).get(exercise_index, {})
     actual_sets = logged_data.get('actual_sets', 0)
-    actual_units_per_set = logged_data.get('actual_reps', 0) 
+    actual_val_input = logged_data.get('actual_reps', 0) # This is either reps count OR duration value
     
-    if actual_sets <= 0 or actual_units_per_set <= 0 or weight_kg <= 0: return 0.0
+    if actual_sets <= 0 or actual_val_input <= 0 or weight_kg <= 0: return 0.0
 
     plan = st.session_state.all_json_plans.get(day_name)
     if not plan: return 0.0
@@ -185,19 +183,34 @@ def calculate_performance_calorie_burn(exercise_index: str, day_name: str, advis
     met_value = float(ex_data.get('met_value', 3.0))
     if met_value <= 0: met_value = 3.0
     
-    # Calculate Seconds
-    total_seconds = 0.0
-    name_lower = ex_data.get('name', '').lower()
+    # [UPDATE] Improved Detection of Time-Based vs Rep-Based
+    planned_reps_str = str(ex_data.get('reps', '')).lower()
+    name_lower = str(ex_data.get('name', '')).lower()
     
     is_time_based = False
-    if section_key == 'cooldown': is_time_based = True
-    elif section_key == 'warmup' and idx == 0: is_time_based = True 
-    elif 'hold' in name_lower or 'plank' in name_lower: is_time_based = True
+    
+    # Check explicit keywords
+    if 'min' in planned_reps_str or 'sec' in planned_reps_str:
+        is_time_based = True
+    elif 'hold' in name_lower or 'plank' in name_lower or 'run' in name_lower or 'cardio' in name_lower:
+        is_time_based = True
+    elif section_key == 'warmup' and idx == 0: # Usually the pulse raiser
+        is_time_based = True
+
+    total_seconds = 0.0
 
     if is_time_based:
-        total_seconds = actual_sets * actual_units_per_set
+        # If input was minutes, convert to seconds, else assume seconds
+        if 'min' in planned_reps_str:
+            # Input `actual_val_input` is likely in minutes because we ask for it in minutes in UI for large durations
+            total_seconds = actual_sets * (actual_val_input * 60)
+        else:
+            # Input is likely seconds (e.g. 30s plank)
+            total_seconds = actual_sets * actual_val_input
     else:
-        total_seconds = actual_sets * (actual_units_per_set * 5) # 5s per rep est.
+        # Rep based calculation
+        # Estimate: 5 seconds per rep for standard tempo
+        total_seconds = actual_sets * (actual_val_input * 5)
         
     total_minutes = total_seconds / 60.0
     estimated_calories = (met_value * weight_kg * 3.5) / 200 * total_minutes
@@ -327,16 +340,16 @@ def generate_workout_json(df, profile):
     duration_str = profile.get('session_duration', '30-45 minutes')
     if "15-20" in duration_str:
         max_main = 2
-        w_dur, c_dur = "3-5 mins", "3-5 mins"
+        w_dur, c_dur = "3-4 mins", "3-5 mins"
     elif "20-30" in duration_str:
         max_main = 3
-        w_dur, c_dur = "5-7 mins", "5-7 mins"
+        w_dur, c_dur = "5-6 mins", "5-7 mins"
     elif "30-45" in duration_str:
         max_main = 4
-        w_dur, c_dur = "8-10 mins", "6-8 mins"
+        w_dur, c_dur = "5-7 mins", "6-8 mins"
     else: # 45-60+
         max_main = 5
-        w_dur, c_dur = "10-12 mins", "8-10 mins"
+        w_dur, c_dur = "8-10 mins", "8-10 mins"
 
     # Create Specific Pools
     # SAFE POOL (No Strength)
@@ -352,14 +365,15 @@ def generate_workout_json(df, profile):
     cardio_pool = base_pool[base_pool['Primary Category'].str.contains('Cardio|HIIT', case=False, na=False)]
     if cardio_pool.empty: cardio_pool = safe_pool
 
-    # [UPDATE] TAGGED COOLDOWN POOL
+    # TAGGED COOLDOWN POOL
     tagged_cooldown_pool = base_pool[base_pool['Tags'].str.contains('Cooldown', case=False, na=False)]
-    if tagged_cooldown_pool.empty: tagged_cooldown_pool = safe_pool # Fallback
+    if tagged_cooldown_pool.empty: tagged_cooldown_pool = safe_pool 
 
     # 2. Logic Setup
     used_exercise_names = set()
     days = profile['days_per_week']
     num_days = len(days)
+    target_parts = profile.get('target_body_parts', ['Full Body'])
     
     split_types = get_weekly_split_logic(profile['primary_goal'], num_days)
     t_sets, t_reps, t_rpe, t_rest = get_volume_intensity(profile['primary_goal'], profile['fitness_level'])
@@ -376,54 +390,77 @@ def generate_workout_json(df, profile):
             "safety_notes": ["Stay hydrated", "Monitor RPE"]
         }
 
-        # --- 1. WARMUP ---
-        # Slot 1: Cardio
-        wp_cardio = safe_pool[safe_pool['Primary Category'].str.contains('Cardio|Warmup', case=False, na=False)]
-        if wp_cardio.empty: wp_cardio = safe_pool
-        w1 = wp_cardio.sample(1).iloc[0]
+        # --- 1. WARMUP (Refined: Pulse Raiser + Dynamic Mobility) ---
+        
+        # [SLOT 1] Pulse Raiser: Low Impact Cardio / Cardio Focus
+        # Filter: Look for Cardio + Low Impact if possible, else just Cardio
+        wp_cardio_pool = safe_pool[safe_pool['Primary Category'].str.contains('Cardio|Warmup', case=False, na=False)]
+        
+        # Refine for low impact if possible
+        wp_low_impact = wp_cardio_pool[wp_cardio_pool['Tags'].str.contains('Low Impact', case=False, na=False)]
+        if not wp_low_impact.empty:
+            wp_selected = wp_low_impact
+        else:
+            wp_selected = wp_cardio_pool
+            if wp_selected.empty: wp_selected = safe_pool
+
+        w1 = wp_selected.sample(1).iloc[0]
         
         day_plan['warmup'].append({
             "name": w1['Exercise Name'],
-            "benefit": "Pulse Raiser",
+            "benefit": "Pulse Raiser (Low Impact)",
             "steps": str(w1['Steps to perform']).split('\n'),
             "sets": "1",
-            "reps": "3 mins" if "15" in duration_str else "5 mins",
+            "reps": "2-3 mins", # [FIX] Explicit 2-3 mins
             "intensity_rpe": "RPE 2-3",
             "rest": "None",
             "equipment": "None",
             "met_value": float(w1.get('MET value', 4.0)),
-            "safety_cue": "Build pace"
+            "safety_cue": "Start slow, build pace"
         })
 
-        # Slot 2 & 3: Mobility
-        # [UPDATE] Logic to prevent repetition across week
-        available_upper = safe_pool[
-            (safe_pool['Primary Category'].str.contains('Mobility|Stretch', case=False, na=False)) & 
-            (safe_pool['Body Region'].str.contains('Upper|Full', case=False, na=False)) &
-            (~safe_pool['Exercise Name'].isin(used_exercise_names))
-        ]
+        # [SLOT 2] Dynamic Mobility: Targeted based on user profile
+        # Determine focus based on Target Body Parts
+        mobility_focus = "Full"
+        user_targets_str = " ".join(target_parts).lower()
         
-        # [UPDATE] Fix: If pool empty because everything used, reset exclusion filter for this pool
-        if available_upper.empty: 
-            available_upper = safe_pool[
-                (safe_pool['Primary Category'].str.contains('Mobility|Stretch', case=False, na=False)) & 
-                (safe_pool['Body Region'].str.contains('Upper|Full', case=False, na=False))
-            ]
+        if "upper" in user_targets_str and "lower" not in user_targets_str:
+            mobility_focus = "Upper"
+        elif "lower" in user_targets_str and "upper" not in user_targets_str:
+            mobility_focus = "Lower"
         
-        w2 = available_upper.sample(1).iloc[0] if not available_upper.empty else safe_pool.sample(1).iloc[0]
+        # Filter mobility pool
+        mobility_pool = safe_pool[safe_pool['Primary Category'].str.contains('Mobility|Stretch|Dynamic', case=False, na=False)]
+        
+        # Apply Body Region Filter
+        if mobility_focus == "Upper":
+            mobility_target = mobility_pool[mobility_pool['Body Region'].str.contains('Upper', case=False, na=False)]
+        elif mobility_focus == "Lower":
+            mobility_target = mobility_pool[mobility_pool['Body Region'].str.contains('Lower|Legs|Hips', case=False, na=False)]
+        else:
+            mobility_target = mobility_pool # Full body or Mixed
+            
+        # Fallback if empty
+        if mobility_target.empty: mobility_target = safe_pool
+
+        # Exclude used
+        available_mob = mobility_target[~mobility_target['Exercise Name'].isin(used_exercise_names)]
+        if available_mob.empty: available_mob = mobility_target # Reset
+
+        w2 = available_mob.sample(1).iloc[0]
         used_exercise_names.add(w2['Exercise Name'])
         
         day_plan['warmup'].append({
             "name": w2['Exercise Name'],
-            "benefit": "Upper Mobility",
+            "benefit": f"Dynamic Mobility ({mobility_focus})",
             "steps": str(w2['Steps to perform']).split('\n'),
             "sets": "1",
-            "reps": "10 reps",
+            "reps": "1 min", # Duration based for mobility flow
             "intensity_rpe": "RPE 3",
             "rest": "None",
             "equipment": "Bodyweight",
             "met_value": float(w2.get('MET value', 2.5)),
-            "safety_cue": "Joint focus"
+            "safety_cue": "Focus on range of motion"
         })
 
         # --- 2. MAIN WORKOUT ---
@@ -475,7 +512,8 @@ def generate_workout_json(df, profile):
             used_exercise_names.add(row['Exercise Name'])
             
             if "Cardio" in day_type:
-                 final_reps = "20-30 mins" if "run" in str(row['Exercise Name']).lower() else "45-60s work"
+                 # [UPDATE] Cardio duration 20-30m for run, but interval work for others
+                 final_reps = "20-30 mins" if "run" in str(row['Exercise Name']).lower() else "2-3 mins"
                  final_sets = "3 rounds"
                  final_rest = "60s"
             else:
@@ -497,7 +535,6 @@ def generate_workout_json(df, profile):
             })
 
         # --- 3. COOLDOWN (Prioritize Tags) ---
-        # [UPDATE] Use tagged_cooldown_pool
         # Slot 1: Breathing
         c1 = safe_pool.sample(1).iloc[0]
         day_plan['cooldown'].append({
@@ -546,7 +583,7 @@ def generate_workout_json(df, profile):
     return schedule_output
 
 def display_interactive_workout_day(day_name: str, plan_json: dict, profile: dict, advisor: FitnessAdvisor):
-    """Renders interactive log."""
+    """Renders interactive log with fixed Duration vs Reps logic."""
     weight_kg = profile.get('weight_kg', 70.0)
     
     if day_name not in st.session_state.logged_performance:
@@ -562,17 +599,28 @@ def display_interactive_workout_day(day_name: str, plan_json: dict, profile: dic
                 st.session_state.logged_performance[day_name][ex_id] = {'actual_sets': 0, 'actual_reps': 0}
             
             planned_sets = str(ex.get('sets', '1'))
-            planned_reps = str(ex.get('reps', '10'))
+            planned_reps = str(ex.get('reps', '10')).lower()
             
             try: d_sets = int(re.search(r'\d+', planned_sets).group())
             except: d_sets = 1
             
-            try: 
-                d_reps = int(re.search(r'\d+', planned_reps).group())
-                u_label = "Seconds" if 'sec' in planned_reps or 'min' in planned_reps else "Reps"
-            except: 
-                d_reps = 10
+            # [UPDATE] Smart Labeling & Default Values based on Time vs Reps
+            is_minutes = 'min' in planned_reps
+            is_seconds = 'sec' in planned_reps or 'hold' in str(ex.get('name', '')).lower()
+            
+            if is_minutes:
+                u_label = "Minutes"
+                # Extract minutes from "2-3 mins"
+                try: d_val = int(re.search(r'\d+', planned_reps).group())
+                except: d_val = 2
+            elif is_seconds:
+                u_label = "Seconds"
+                try: d_val = int(re.search(r'\d+', planned_reps).group())
+                except: d_val = 30
+            else:
                 u_label = "Reps"
+                try: d_val = int(re.search(r'\d+', planned_reps).group())
+                except: d_val = 10
 
             with st.container():
                 c1, c2, c3 = st.columns([3, 1.5, 1.5])
@@ -580,14 +628,14 @@ def display_interactive_workout_day(day_name: str, plan_json: dict, profile: dic
                     st.markdown(f"**{ex['name']}**")
                     col_s, col_r = st.columns(2)
                     with col_s: st.write(f"**Sets:** {planned_sets}")
-                    with col_r: st.write(f"**Target:** {planned_reps}")
+                    with col_r: st.write(f"**Target:** {ex.get('reps')}")
                     
                     with st.expander("Details"):
                         st.write(ex.get('steps', []))
                         st.warning(f"Safety: {ex.get('safety_cue', '')}")
                 with c2:
                     val_s = st.number_input("Sets", 0, 10, d_sets, key=f"s_{day_name}_{ex_id}")
-                    val_r = st.number_input(u_label, 0, 300, d_reps, key=f"r_{day_name}_{ex_id}")
+                    val_r = st.number_input(u_label, 0, 300, d_val, key=f"r_{day_name}_{ex_id}")
                     st.session_state.logged_performance[day_name][ex_id] = {'actual_sets': val_s, 'actual_reps': val_r}
                 with c3:
                     burned = calculate_performance_calorie_burn(ex_id, day_name, advisor, weight_kg)
