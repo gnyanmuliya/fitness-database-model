@@ -11,7 +11,7 @@ from datetime import datetime
 DATASET_FILE = "Newdata 1.csv"
 
 # CONSTANTS 
-PRIMARY_GOALS = ["Weight Loss", "Muscle Gain", "Endurance", "Flexibility", "General Fitness", "Weight Maintenance"]
+PRIMARY_GOALS = ["Weight Loss", "Weight Gain", "Weight Maintenance"]
 SECONDARY_GOALS = ["Stress Reduction", "Sleep Improvement", "Athletic Performance", "Posture Correction"]
 MEDICAL_CONDITIONS_OPTIONS = ["None", "Diabetes", "Hypertension", "Asthma", "Arthritis", "Back Pain", "Knee Pain"]
 
@@ -29,8 +29,9 @@ st.set_page_config(page_title="FriskaAI Fitness Coach", page_icon="💪", layout
 @st.cache_data
 def load_data(filepath):
     try:
-        # Load CSV
-        df = pd.read_csv(filepath)
+        # [FIX] Use engine='python' to handle trailing commas and complex quotes
+        # [FIX] on_bad_lines='skip' ensures the app doesn't crash on a single malformed row
+        df = pd.read_csv(filepath, engine='python', encoding='utf-8-sig', on_bad_lines='skip')
         
         # 1. Clean Headers (Remove BOM, strip spaces)
         df.columns = [c.strip().replace('\ufeff', '') for c in df.columns]
@@ -39,7 +40,7 @@ def load_data(filepath):
         column_mapping = {
             'Physical limitations': ['physical limitations', 'Physical Limitations', 'limitations', 'Physical Limitation', 'injuries'],
             'is_not_suitable_for': ['is_not_suitable_for', 'Is Not Suitable For', 'Not Suitable For', 'Medical Contraindications'],
-            'Tags': ['Tags', 'tags', 'Tag', 'tag'], # [UPDATE] Added Tags
+            'Tags': ['Tags', 'tags', 'Tag', 'tag'],
             'Equipments': ['Equipment', 'equipment', 'equipments'],
             'Exercise Name': ['Exercise name', 'exercise name', 'Name', 'name'],
             'Age Suitability': ['Age suitability', 'Age', 'age'],
@@ -52,13 +53,15 @@ def load_data(filepath):
         for standard, variations in column_mapping.items():
             if standard not in df.columns:
                 for v in variations:
+                    # Case-insensitive check against actual columns
                     match = next((col for col in df.columns if col.lower() == v.lower()), None)
                     if match:
                         df.rename(columns={match: standard}, inplace=True)
                         break
         
         # 3. Critical Failsafe: Ensure columns exist to prevent KeyError
-        required_cols = ['Physical limitations', 'is_not_suitable_for', 'Tags', 'Equipments', 'Exercise Name', 'Primary Category', 'Body Region', 'Age Suitability', 'MET value', 'Goal', 'Safety cue']
+        # [UPDATE] Added 'is_not_suitable_for' and 'Tags' to required columns check
+        required_cols = ['Physical limitations', 'is_not_suitable_for', 'Equipments', 'Exercise Name', 'Primary Category', 'Body Region', 'Age Suitability', 'MET value', 'Goal', 'Safety cue', 'Tags']
         for col in required_cols:
             if col not in df.columns:
                 # Create dummy column if missing
@@ -67,7 +70,7 @@ def load_data(filepath):
         # 4. Data Type Conversion
         df['MET value'] = pd.to_numeric(df['MET value'], errors='coerce').fillna(3.0)
         
-        text_cols = ['Age Suitability', 'Goal', 'Primary Category', 'Body Region', 'Equipments', 'Fitness Level', 'Physical limitations', 'is_not_suitable_for', 'Tags', 'Safety cue', 'Exercise Name']
+        text_cols = ['Age Suitability', 'Goal', 'Primary Category', 'Body Region', 'Equipments', 'Fitness Level', 'Physical limitations', 'is_not_suitable_for', 'Safety cue', 'Exercise Name', 'Tags']
         for col in text_cols:
             if col in df.columns:
                 df[col] = df[col].fillna('None').astype(str)
@@ -76,7 +79,7 @@ def load_data(filepath):
     except Exception as e:
         st.error(f"Data Loading Error: {e}")
         return pd.DataFrame()
-
+        
 def parse_age_suitability(user_age, range_str):
     """Parses '40-59', 'All Ages', '60+' from dataset."""
     rs = str(range_str).lower()
