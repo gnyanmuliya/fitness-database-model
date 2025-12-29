@@ -491,7 +491,10 @@ def display_interactive_workout_day(day_name: str, plan_json: dict, profile: dic
                 c1, c2, c3 = st.columns([3, 1.5, 1.5])
                 with c1:
                     st.markdown(f"**{ex['name']}**")
-                    st.caption(f"Target: {ex['sets']} sets x {ex['reps']}")
+                    # [FIXED] Separated Display Formatting
+                    st.markdown(f"**Sets:** {ex.get('sets', '1')}")
+                    st.markdown(f"**Reps:** {ex.get('reps', '10')}")
+                    
                     with st.expander("Instructions"):
                         st.write(ex.get('steps', []))
                         st.warning(ex.get('safety_cue', ''))
