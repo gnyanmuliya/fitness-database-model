@@ -7,10 +7,10 @@ import json
 from datetime import datetime
 
 # ============ CONFIGURATION & CONSTANTS ============
-DATASET_FILE = "Newdataset 1.csv"
+DATASET_FILE = "Newdata 1.csv"
 
 # CONSTANTS 
-PRIMARY_GOALS = ["Weight Loss", "Weight Gain", "Weight Maintenance"]
+PRIMARY_GOALS = ["Weight Loss", "Muscle Gain", "Endurance", "Flexibility", "General Fitness", "Weight Maintenance"]
 SECONDARY_GOALS = ["Stress Reduction", "Sleep Improvement", "Athletic Performance", "Posture Correction"]
 MEDICAL_CONDITIONS_OPTIONS = ["None", "Diabetes", "Hypertension", "Asthma", "Arthritis", "Back Pain", "Knee Pain"]
 
@@ -28,11 +28,10 @@ st.set_page_config(page_title="FriskaAI Fitness Coach", page_icon="💪", layout
 @st.cache_data
 def load_data(filepath):
     try:
-        # [FIX] Use engine='python' to handle complex quoted fields with newlines
-        # [FIX] on_bad_lines='skip' prevents the "Expected 18 fields..." crash
+        # [FIX] Use engine='python' for robust parsing
         df = pd.read_csv(filepath, engine='python', on_bad_lines='skip')
         
-        # 1. Clean Headers (Remove BOM, strip spaces)
+        # 1. Clean Headers
         df.columns = [c.strip().replace('\ufeff', '') for c in df.columns]
         
         # 2. Smart Column Renaming
@@ -56,7 +55,7 @@ def load_data(filepath):
                         df.rename(columns={match: standard}, inplace=True)
                         break
         
-        # 3. Critical Failsafe for missing columns
+        # 3. Critical Failsafe
         required_cols = ['Physical limitations', 'is_not_suitable_for', 'Tags', 'Equipments', 'Exercise Name', 'Primary Category', 'Body Region', 'Age Suitability', 'MET value', 'Goal', 'Safety cue']
         for col in required_cols:
             if col not in df.columns:
@@ -227,21 +226,18 @@ def generate_workout_json(df, profile):
         max_main, w_dur, c_dur = 5, "10-12 mins", "8-10 mins"
 
     # [FIX] POOL SEGREGATION
-    # 1. Cooldown Pool (Strictly Tagged)
     cooldown_pool = base_pool[base_pool['Tags'].str.contains('Cooldown', case=False, na=False)]
     
-    # 2. Main/Warmup Pool (EXCLUDES Cooldown tags to reserve them)
+    # Exclude Cooldown tags from active pool to reserve them
     active_pool = base_pool[~base_pool['Tags'].str.contains('Cooldown', case=False, na=False)]
-    if active_pool.empty: active_pool = base_pool # Fallback
+    if active_pool.empty: active_pool = base_pool 
 
-    # 3. Strength vs Cardio Pools (Derived from Active Pool)
     strength_pool = active_pool[active_pool['Primary Category'].str.contains('Strength|Hypertrophy|Power', case=False, na=False)]
     if strength_pool.empty: strength_pool = active_pool
     
     cardio_pool = active_pool[active_pool['Primary Category'].str.contains('Cardio|HIIT', case=False, na=False)]
     if cardio_pool.empty: cardio_pool = active_pool
 
-    # 4. Safe Pool (No heavy strength)
     safe_pool = active_pool[~active_pool['Primary Category'].str.contains('Strength|Hypertrophy|Power', case=False, na=False)]
     if safe_pool.empty: safe_pool = active_pool
 
@@ -268,10 +264,10 @@ def generate_workout_json(df, profile):
             "sets": "1", "reps": "3 mins" if "15" in duration_str else "5 mins", "rest": "None", "met_value": float(w1.get('MET value', 4.0))
         })
 
-        # 2. Mobility (Unique)
+        # 2. Mobility
         avail_mob = safe_pool[safe_pool['Primary Category'].str.contains('Mobility|Stretch', case=False, na=False)]
         avail_mob = avail_mob[~avail_mob['Exercise Name'].isin(used_exercise_names)]
-        if avail_mob.empty: avail_mob = safe_pool # Reset if exhausted
+        if avail_mob.empty: avail_mob = safe_pool 
         
         w2 = avail_mob.sample(1).iloc[0]
         used_exercise_names.add(w2['Exercise Name'])
@@ -283,21 +279,15 @@ def generate_workout_json(df, profile):
         # --- MAIN WORKOUT ---
         current_pool = cardio_pool if "Cardio" in day_type else strength_pool
         
-        # Apply Split Filter
         if "Cardio" not in day_type:
             if "Upper" in day_type: current_pool = current_pool[current_pool['Body Region'].str.contains('Upper', case=False, na=False)]
             elif "Lower" in day_type: current_pool = current_pool[current_pool['Body Region'].str.contains('Lower', case=False, na=False)]
         
-        # Filter Used
         avail_main = current_pool[~current_pool['Exercise Name'].isin(used_exercise_names)]
         
-        # [FIX] Reset Pool Logic if running low
-        if len(avail_main) < max_main:
-            avail_main = current_pool # Reset used filter for this specific pool
-        
-        # If STILL low (small dataset), fallback to general strength
-        if len(avail_main) < max_main:
-            avail_main = pd.concat([avail_main, strength_pool]).drop_duplicates()
+        # [FIX] Reset Pool Logic
+        if len(avail_main) < max_main: avail_main = current_pool 
+        if len(avail_main) < max_main: avail_main = pd.concat([avail_main, strength_pool]).drop_duplicates()
 
         selection = avail_main.sample(min(max_main, len(avail_main)))
         
@@ -318,10 +308,9 @@ def generate_workout_json(df, profile):
             "sets": "1", "reps": "1 min", "rest": "None", "met_value": 1.5
         })
         
-        # Pick from Cooldown Tagged Pool
         avail_cool = cooldown_pool[~cooldown_pool['Exercise Name'].isin(used_exercise_names)]
-        if avail_cool.empty: avail_cool = cooldown_pool # Reset
-        if avail_cool.empty: avail_cool = safe_pool # Fallback to untagged safe exercises
+        if avail_cool.empty: avail_cool = cooldown_pool 
+        if avail_cool.empty: avail_cool = safe_pool 
         
         num_c = 1 if max_main <= 2 else 2
         c_sel = avail_cool.sample(min(num_c, len(avail_cool)))
@@ -338,65 +327,300 @@ def generate_workout_json(df, profile):
         
     return schedule_output
 
-# ============ APP UI ============
+def display_interactive_workout_day(day_name: str, plan_json: dict, profile: dict, advisor: FitnessAdvisor):
+    weight_kg = profile.get('weight_kg', 70.0)
+    
+    if day_name not in st.session_state.logged_performance:
+        st.session_state.logged_performance[day_name] = {}
 
+    def render_section(section_data, title, key):
+        if not section_data: return
+        st.markdown(f"### {title}")
+        for idx, ex in enumerate(section_data):
+            ex_id = f"{key}_{idx+1}"
+            
+            if ex_id not in st.session_state.logged_performance[day_name]:
+                st.session_state.logged_performance[day_name][ex_id] = {'actual_sets': 0, 'actual_reps': 0}
+            
+            planned_sets = str(ex.get('sets', '1'))
+            planned_reps = str(ex.get('reps', '10'))
+            
+            try: d_sets = int(re.search(r'\d+', planned_sets).group())
+            except: d_sets = 1
+            
+            try: 
+                d_reps = int(re.search(r'\d+', planned_reps).group())
+                u_label = "Seconds" if 'sec' in planned_reps or 'min' in planned_reps else "Reps"
+            except: 
+                d_reps = 10
+                u_label = "Reps"
+
+            with st.container():
+                c1, c2, c3 = st.columns([3, 1.5, 1.5])
+                with c1:
+                    st.markdown(f"**{ex['name']}**")
+                    col_s, col_r = st.columns(2)
+                    with col_s: st.write(f"**Sets:** {planned_sets}")
+                    with col_r: st.write(f"**Target:** {planned_reps}")
+                    with st.expander("Details"):
+                        st.write(ex.get('steps', []))
+                        st.warning(f"Safety: {ex.get('safety_cue', '')}")
+                with c2:
+                    val_s = st.number_input("Sets", 0, 10, d_sets, key=f"s_{day_name}_{ex_id}")
+                    val_r = st.number_input(u_label, 0, 300, d_reps, key=f"r_{day_name}_{ex_id}")
+                    st.session_state.logged_performance[day_name][ex_id] = {'actual_sets': val_s, 'actual_reps': val_r}
+                with c3:
+                    burned = calculate_performance_calorie_burn(ex_id, day_name, advisor, weight_kg)
+                    st.metric("🔥 Burned", f"{int(burned)} kcal")
+                st.divider()
+
+    render_section(plan_json.get('warmup', []), "🔥 Warmup", "warmup")
+    render_section(plan_json.get('main_workout', []), "💪 Main Workout", "main")
+    render_section(plan_json.get('cooldown', []), "🧘 Cooldown", "cooldown")
+
+# ============ APP UI EXECUTION ============
+
+# Initialize Session State
 if 'user_profile' not in st.session_state: st.session_state.user_profile = {}
 if 'all_json_plans' not in st.session_state: st.session_state.all_json_plans = {}
 if 'logged_performance' not in st.session_state: st.session_state.logged_performance = {}
 
 with st.form("fitness_form"):
-    st.subheader("📋 FriskaAI Intake")
-    col1, col2 = st.columns(2)
-    with col1:
-        name = st.text_input("Name", value=st.session_state.user_profile.get('name', ''))
-        age = st.number_input("Age", 13, 100, 30)
-        gender = st.selectbox("Gender", ["Male", "Female", "Other"])
-    with col2:
-        weight = st.number_input("Weight (kg)", 30.0, 300.0, 70.0)
-        height = st.number_input("Height (cm)", 100.0, 250.0, 170.0)
-    
-    st.subheader("🎯 Goals & Level")
-    p_goal = st.selectbox("Goal", PRIMARY_GOALS)
-    level = st.selectbox("Level", list(TRAINING_LEVELS.keys()))
-    
-    st.subheader("🏥 Health & Logistics")
-    meds = st.multiselect("Conditions", MEDICAL_CONDITIONS_OPTIONS)
-    limits = st.text_area("Physical Limitations")
-    days = st.multiselect("Days", ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], default=["Monday", "Wednesday", "Friday"])
-    dur = st.selectbox("Duration", ["15-20 minutes", "20-30 minutes", "30-45 minutes", "45-60 minutes"], index=2)
-    equip = st.multiselect("Equipment", ["Bodyweight Only", "Dumbbells", "Bands", "Full Gym Access"], default=["Bodyweight Only"])
-    
-    submit = st.form_submit_button("🚀 Generate Plan")
+        
+        bmi_placeholder = st.empty()
+        profile = st.session_state.user_profile
+        
+        # Calculate initial/re-run BMI
+        current_weight_kg = profile.get('weight_kg', 70.0)
+        current_height_cm = profile.get('height_cm', 170.0)
+        current_bmi = 0
+        if current_weight_kg > 0 and current_height_cm > 0:
+            current_bmi = current_weight_kg / ((current_height_cm / 100) ** 2)
+            bmi_placeholder.info(f"📊 Your BMI: {current_bmi:.1f}")
+        else:
+            bmi_placeholder.info("📊 Your BMI: Enter height and weight.")
+        
+        # Basic Info
+        st.subheader("📋 Basic Information")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            name = st.text_input("Name *", placeholder="Your name", key="name_input", value=profile.get('name', ''))
+            age = st.number_input("Age *", min_value=13, max_value=100, value=profile.get('age', 30), key="age_input")
+            gender_default_index = ["Male", "Female", "Other"].index(profile.get('gender', 'Male'))
+            gender = st.selectbox("Gender *", ["Male", "Female", "Other"], key="gender_input", index=gender_default_index)
+        
+        with col2:
+            unit_system_default = profile.get('unit_system', 'Metric (kg, cm)')
+            unit_system = st.radio("Units *", ["Metric (kg, cm)", "Imperial (lbs, in)"], key="unit_input", index=["Metric (kg, cm)", "Imperial (lbs, in)"].index(unit_system_default))
+            
+            weight_kg = 0.0
+            height_cm = 0.0
+            
+            if unit_system == "Metric (kg, cm)":
+                weight_kg = st.number_input("Weight (kg) *", min_value=30.0, max_value=300.0, value=profile.get('weight_kg', 70.0), key="weight_kg_input")
+                height_cm = st.number_input("Height (cm) *", min_value=100.0, max_value=250.0, value=profile.get('height_cm', 170.0), key="height_cm_input")
+            else:
+                weight_lbs_default = profile.get('weight_kg', 70.0) / 0.453592 if profile.get('weight_kg') else 154.3
+                height_in_default = profile.get('height_cm', 170.0) / 2.54 if profile.get('height_cm') else 66.9
+                
+                weight_lbs = st.number_input("Weight (lbs) *", min_value=66.0, max_value=660.0, value=weight_lbs_default, key="weight_lbs_input")
+                height_in = st.number_input("Height (in) *", min_value=39.0, max_value=98.0, value=height_in_default, key="height_in_input")
+                
+                weight_kg = weight_lbs * 0.453592
+                height_cm = height_in * 2.54
+        
+        final_bmi = 0
+        if weight_kg > 0 and height_cm > 0:
+            final_bmi = weight_kg / ((height_cm / 100) ** 2)
+            bmi_placeholder.info(f"📊 Your BMI: {final_bmi:.1f}")
 
-if submit:
-    if not name or not days:
-        st.error("Name and Days are required.")
-    else:
-        df = load_data(DATASET_FILE)
-        if not df.empty:
-            profile = {
-                "name": name, "age": age, "gender": gender, "weight_kg": weight, "height_cm": height,
-                "primary_goal": p_goal, "fitness_level": level, "medical_conditions": meds,
-                "physical_limitation": limits, "days_per_week": days, "session_duration": dur,
-                "available_equipment": equip
-            }
-            st.session_state.user_profile = profile
-            with st.spinner("Generating..."):
-                plans = generate_workout_json(df, profile)
-                st.session_state.all_json_plans = plans
-                st.success("Plan Ready!")
+        # Goals
+        st.subheader("🎯 Fitness Goals")
+        col1, col2 = st.columns(2)
+        
+        primary_goal_options = PRIMARY_GOALS
+        saved_goal = profile.get('primary_goal', 'Weight Maintenance')
+        if saved_goal in primary_goal_options:
+            primary_goal_default_index = primary_goal_options.index(saved_goal)
+        else:
+            primary_goal_default_index = 0
+            
+        primary_goal = st.selectbox(
+            "Primary Goal *",
+            primary_goal_options, key="primary_goal_input", index=primary_goal_default_index
+        )
+        
+        secondary_goal_options = ["None"] + SECONDARY_GOALS
+        secondary_goal_default_value = profile.get('secondary_goal', 'None')
+        secondary_goal_default_index = secondary_goal_options.index(secondary_goal_default_value if secondary_goal_default_value in secondary_goal_options else 'None')
+        secondary_goal = st.selectbox(
+            "Secondary Goal (Optional)",
+            secondary_goal_options, key="secondary_goal_input", index=secondary_goal_default_index
+        )
+        
+        # New Body Part Selection
+        st.subheader("🏋️ Target Focus")
+        body_part_options = ["Upper Body", "Lower Body", "Core", "Full Body"]
+        body_parts_default = profile.get('target_body_parts', ["Full Body"])
+        target_body_parts = st.multiselect(
+            "Select Body Parts to Focus On:",
+            body_part_options, 
+            default=body_parts_default, 
+            key="body_parts_input"
+        )
+        if not target_body_parts:
+            target_body_parts = ["Full Body"]
 
+        # Fitness Level (Experience)
+        st.subheader("⏱️ Experience Level")
+        fitness_level_options = list(TRAINING_LEVELS.keys())
+        fitness_level_default_index = fitness_level_options.index(profile.get('fitness_level', 'Beginner (0–6 months)'))
+        fitness_level = st.selectbox(
+            "Training Experience (Level) *",
+            fitness_level_options, key="fitness_level_input", index=fitness_level_default_index
+        )
+        
+        level_info = TRAINING_LEVELS[fitness_level]
+        st.info(f"**{fitness_level}** (RPE {level_info['rpe_range']}): {level_info['description']}")
+        
+        # Medical Conditions
+        st.subheader("🏥 Health Screening")
+        initial_multiselect_default = profile.get('medical_conditions', [])
+        medical_conditions = st.multiselect(
+            "Medical Conditions *",
+            MEDICAL_CONDITIONS_OPTIONS, 
+            default=initial_multiselect_default, 
+            key="medical_conditions_input"
+        )
+        
+        # Physical Limitations
+        st.warning("⚠️ **Physical Limitations** - Describe ANY injuries, pain, or movement restrictions")
+        physical_limitation = st.text_area( 
+            "Physical Limitations (Important for Safety) *",
+            placeholder="E.g., 'Previous right knee surgery - avoid deep squats'",
+            height=100, key="physical_limitation_input", value=profile.get('physical_limitation', '')
+        )
+        
+        # Specific Exercise Avoidance
+        st.warning("⚠️ **Specific Exercise Restrictions**")
+        initial_avoid_text = profile.get('specific_avoidance', '') 
+        if initial_avoid_text == 'None': initial_avoid_text = ''
+        specific_avoidance_input = st.text_area(
+            "Have you been advised to avoid any specific exercises? (If yes, please list them below):",
+            placeholder="E.g., 'Heavy deadlifts, overhead pressing due to shoulder issue...'",
+            height=100, key="specific_avoidance_text_input", value=initial_avoid_text
+        )
+        
+        # Training Schedule
+        st.subheader("💪 Training Schedule")
+        col1, col2 = st.columns(2)
+        with col1:
+            days_per_week = st.multiselect(
+                "Training Days *",
+                ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+                default=profile.get('days_per_week', ["Monday", "Wednesday", "Friday"]), key="days_per_week_input"
+            )
+        with col2:
+            session_duration_options = ["15-20 minutes", "20-30 minutes", "30-45 minutes", "45-60 minutes"]
+            session_duration_default_index = session_duration_options.index(profile.get('session_duration', '30-45 minutes'))
+            session_duration = st.selectbox(
+                "Session Duration *",
+                session_duration_options, key="session_duration_input", index=session_duration_default_index
+            )
+
+        # Workout Location & Equipment
+        st.subheader("🗺️ Workout Location")
+        location_options = ["Home", "Gym", "Outdoor", "Any"]
+        location_default_index = location_options.index(profile.get('workout_location', 'Home'))
+        workout_location = st.selectbox(
+            "Where will you primarily work out?",
+            location_options, key="location_input", index=location_default_index
+        )
+        
+        st.subheader("🏋️ Available Equipment")
+        if workout_location == "Gym":
+            st.info("✅ **Gym Selected:** We will assume access to standard gym equipment.")
+            equipment = ["Full Gym Access", "Machines", "Cables", "Barbells", "Dumbbells", "Bench", "Pull-up Bar", "Kettlebells"]
+        else:
+            eq_options = ["Bodyweight Only", "Dumbbells", "Resistance Bands", "Kettlebells", "Barbell", "Bench", "Pull-up Bar", "Yoga Mat"]
+            equipment = st.multiselect(
+                "Select all available equipment:", 
+                eq_options, 
+                default=profile.get('available_equipment', ["Bodyweight Only"]), 
+                key="equipment_input"
+            )
+            if not equipment: equipment = ["Bodyweight Only"]
+        
+        # Submit button
+        st.markdown("---")
+        submit_clicked = st.form_submit_button(
+            "🚀 Generate My Fitness Plan",
+            use_container_width=True,
+            type="primary"
+        )
+        
+        # Process ONLY when button clicked
+        if submit_clicked:
+            if not name or len(name.strip()) < 2:
+                st.error("❌ Please enter your name.")
+            elif not days_per_week:
+                st.error("❌ Please select at least one training day.")
+            elif final_bmi <= 0 or (weight_kg <= 0 or height_cm <= 0):
+                st.error("❌ Please ensure valid weight and height inputs.")
+            else:
+                if "None" in medical_conditions and len(medical_conditions) > 1:
+                    medical_conditions.remove("None")
+                if not medical_conditions: medical_conditions = ["None"]
+                
+                # --- START BACKEND GENERATION LOGIC ---
+                df = load_data(DATASET_FILE)
+                if df.empty:
+                    st.stop()
+                
+                updated_profile = {
+                    "name": name, "age": age, "gender": gender, 
+                    "weight_kg": weight_kg, "height_cm": height_cm, "bmi": f"{final_bmi:.1f}",
+                    "primary_goal": primary_goal, "secondary_goal": secondary_goal,
+                    "target_body_parts": target_body_parts, "fitness_level": fitness_level,
+                    "medical_conditions": medical_conditions, 
+                    "physical_limitation": physical_limitation,
+                    "specific_avoidance": specific_avoidance_input,
+                    "days_per_week": days_per_week, "session_duration": session_duration,
+                    "workout_location": workout_location, "available_equipment": equipment,
+                    "unit_system": unit_system
+                }
+                st.session_state.user_profile = updated_profile
+                
+                with st.spinner("Processing Expert Algorithm..."):
+                    time.sleep(1) 
+                    plans = generate_workout_json(df, updated_profile)
+                    st.session_state.all_json_plans = plans
+                    st.success("✅ Precision Plan Generated Successfully!")
+
+# --- DISPLAY OUTPUT ---
 if st.session_state.all_json_plans:
     df_loaded = load_data(DATASET_FILE)
     advisor = FitnessAdvisor(df_loaded)
+    best_tip = "Consistency > Intensity"
     
+    # 1. Tabs Display (First)
     tabs = st.tabs(st.session_state.user_profile['days_per_week'])
     for i, day in enumerate(st.session_state.user_profile['days_per_week']):
         with tabs[i]:
             if day in st.session_state.all_json_plans:
                 display_interactive_workout_day(day, st.session_state.all_json_plans[day], st.session_state.user_profile, advisor)
-    
+
+    # 2. Separator
     st.markdown("---")
-    st.subheader("📥 Export")
-    md_text = generate_markdown_export(st.session_state.user_profile, st.session_state.all_json_plans, "Keep going!")
-    st.download_button("Download Plan (MD)", md_text, file_name="plan.md")
+    
+    # 3. Export Options (Last)
+    st.subheader("📥 Download Your Plan")
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c2:
+        md_text = generate_markdown_export(st.session_state.user_profile, st.session_state.all_json_plans, best_tip)
+        st.download_button(label="📄 Download Plan (MD)", data=md_text, file_name=f"Plan_{datetime.now().strftime('%Y%m%d')}.md", mime="text/markdown", use_container_width=True)
+    with c3:
+        json_export = {"profile": st.session_state.user_profile, "plans_json": st.session_state.all_json_plans}
+        json_text = json.dumps(json_export, indent=4)
+        st.download_button(label="📋 Download Plan (JSON)", data=json_text, file_name=f"Plan_{datetime.now().strftime('%Y%m%d')}.json", mime="application/json", use_container_width=True)
