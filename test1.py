@@ -4,6 +4,7 @@ import random
 import re
 import time
 import json
+import difflib  # Added for Fuzzy Logic
 from datetime import datetime
 
 # ============ CONFIGURATION & CONSTANTS ============
@@ -28,7 +29,6 @@ st.set_page_config(page_title="FriskaAI Fitness Coach", page_icon="💪", layout
 @st.cache_data
 def load_data(filepath):
     try:
-        # Robust loading to handle bad lines/extra commas
         try:
             df = pd.read_csv(filepath, on_bad_lines='skip')
         except:
@@ -47,7 +47,9 @@ def load_data(filepath):
             'Age Suitability': ['Age suitability', 'Age', 'age'],
             'Primary Category': ['Primary category', 'Category', 'category'],
             'Body Region': ['Body region', 'Muscle Group', 'Target'],
-            'MET value': ['MET Value', 'Met Value', 'MET', 'met']
+            'MET value': ['MET Value', 'Met Value', 'MET', 'met'],
+            'Sets': ['Sets', 'sets', 'Set', 'set', 'Recommended Sets'],
+            'Reps': ['Reps', 'reps', 'Rep', 'rep', 'Duration', 'duration', 'Recommended Reps']
         }
 
         for standard, variations in column_mapping.items():
@@ -63,14 +65,18 @@ def load_data(filepath):
         for col in required_cols:
             if col not in df.columns:
                 df[col] = 'None' if col != 'MET value' else 3.0
+        
+        # Ensure Sets/Reps exist
+        if 'Sets' not in df.columns: df['Sets'] = ''
+        if 'Reps' not in df.columns: df['Reps'] = ''
 
         # 4. Data Type Conversion
         df['MET value'] = pd.to_numeric(df['MET value'], errors='coerce').fillna(3.0)
         
-        text_cols = ['Age Suitability', 'Goal', 'Primary Category', 'Body Region', 'Equipments', 'Fitness Level', 'Physical limitations', 'is_not_suitable_for', 'Tags', 'Safety cue', 'Exercise Name']
+        text_cols = ['Age Suitability', 'Goal', 'Primary Category', 'Body Region', 'Equipments', 'Fitness Level', 'Physical limitations', 'is_not_suitable_for', 'Tags', 'Safety cue', 'Exercise Name', 'Sets', 'Reps']
         for col in text_cols:
             if col in df.columns:
-                df[col] = df[col].fillna('None').astype(str)
+                df[col] = df[col].fillna('').astype(str)
                 
         return df
     except Exception as e:
@@ -272,42 +278,77 @@ def generate_workout_json(df, profile):
     base_pool = filter_exercises(df, profile)
     if base_pool.empty: base_pool = df.copy() 
     
-    # Calculate Main Workout Volume
+    # Calculate Algo Volume
     duration_str = profile.get('session_duration', '30-45 minutes')
     if "15-20" in duration_str: max_main = 2
     elif "20-30" in duration_str: max_main = 3
     elif "30-45" in duration_str: max_main = 4
     else: max_main = 5
 
-    # --- POOL SEGMENTATION ---
-    # 1. Warmup Pool (Dynamic / Cardio / Low Impact) - NO STATIC
-    warmup_base = base_pool[
-        ~base_pool['Tags'].str.contains('Static|Passive', case=False, na=False) & 
-        ~base_pool['Primary Category'].str.contains('Strength|Power', case=False, na=False)
-    ]
-    
-    # 2. Strength Pool
+    # --- POOL SEGMENTATION (TAG BASED FOR WARMUP/COOLDOWN) ---
+    # Warmup: Strictly 'Warmup' tag
+    warmup_pool = base_pool[base_pool['Tags'].str.contains('Warmup', case=False, na=False)]
+    if warmup_pool.empty: warmup_pool = base_pool # Fallback
+
+    # Cooldown: Strictly 'Cooldown' tag
+    cooldown_pool = base_pool[base_pool['Tags'].str.contains('Cooldown', case=False, na=False)]
+    if cooldown_pool.empty: cooldown_pool = base_pool # Fallback
+
+    # Strength & Cardio Pools (Category based)
     strength_pool = base_pool[base_pool['Primary Category'].str.contains('Strength|Hypertrophy|Power', case=False, na=False)]
     if strength_pool.empty: strength_pool = base_pool
     
-    # 3. Cardio Pool
     cardio_pool = base_pool[base_pool['Primary Category'].str.contains('Cardio|HIIT', case=False, na=False)]
-    if cardio_pool.empty: cardio_pool = warmup_base
-
-    # 4. Cooldown Pool (STRICT STATIC / TAGGED COOLDOWN)
-    # Must have "Cooldown" tag OR "Static" tag. Must NOT be dynamic.
-    cooldown_pool = base_pool[
-        (base_pool['Tags'].str.contains('Cooldown|Static', case=False, na=False)) &
-        (~base_pool['Tags'].str.contains('Dynamic|Ballistic|Plyo', case=False, na=False))
-    ]
-    # Fallback to general stretch if strict pool is empty
-    if cooldown_pool.empty:
-        cooldown_pool = base_pool[base_pool['Primary Category'].str.contains('Stretch|Yoga', case=False, na=False)]
+    if cardio_pool.empty: cardio_pool = base_pool
 
     used_exercise_names = set()
     days = profile['days_per_week']
     split_types = get_weekly_split_logic(profile['primary_goal'], len(days))
     t_sets, t_reps, t_rpe, t_rest = get_volume_intensity(profile['primary_goal'], profile['fitness_level'])
+
+    # Helper: Resolve Volume (Smart Fallback)
+    def resolve_volume(csv_val, algo_val):
+        val = str(csv_val).strip()
+        if val in ['', 'nan', 'None', '0', '0.0']:
+            return algo_val
+        return val
+
+    # Helper: Fuzzy Selection
+    def get_fuzzy_unique(pool, count, used_set):
+        selected = []
+        if pool.empty: return selected
+        
+        # Shuffle pool to randomize
+        candidates = pool.sample(frac=1)
+        
+        for _, row in candidates.iterrows():
+            if len(selected) >= count: break
+            
+            name = row['Exercise Name']
+            is_dup = False
+            
+            # Fuzzy Check
+            for used in used_set:
+                ratio = difflib.SequenceMatcher(None, name.lower(), used.lower()).ratio()
+                if ratio > 0.85: # Threshold for similarity
+                    is_dup = True
+                    break
+            
+            if not is_dup:
+                selected.append(row)
+                used_set.add(name)
+        
+        # Fallback if we couldn't find unique ones
+        if len(selected) < count:
+            remaining = count - len(selected)
+            others = pool[~pool['Exercise Name'].isin([r['Exercise Name'] for r in selected])]
+            if not others.empty:
+                extra = others.head(remaining)
+                for _, row in extra.iterrows():
+                    selected.append(row)
+                    used_set.add(row['Exercise Name'])
+                    
+        return selected
 
     for i, day in enumerate(days):
         day_type = split_types[i]
@@ -320,135 +361,86 @@ def generate_workout_json(df, profile):
             "safety_notes": ["Stay hydrated", "Monitor RPE"]
         }
 
-        # --- 1. WARMUP (Strict: 1 Cardio + 1 Upper Dynamic + 1 Lower Dynamic) ---
+        # --- 1. WARMUP (3 Exercises: General, Upper, Lower if possible) ---
+        # We try to get variety from the Warmup Tagged pool
+        w_selection = get_fuzzy_unique(warmup_pool, 3, used_exercise_names)
         
-        # A. General Pulse Raiser (2-3 mins)
-        wp_cardio = warmup_base[warmup_base['Primary Category'].str.contains('Cardio', case=False, na=False)]
-        if wp_cardio.empty: wp_cardio = warmup_base
-        w1 = wp_cardio.sample(1).iloc[0]
-        day_plan['warmup'].append({
-            "name": w1['Exercise Name'],
-            "benefit": "Pulse Raiser",
-            "steps": str(w1.get('Steps to perform', '')).split('\n'),
-            "sets": "1",
-            "reps": "2-3 mins",
-            "met_value": float(w1.get('MET value', 4.0)),
-            "safety_cue": "Start slow"
-        })
+        for w_row in w_selection:
+            day_plan['warmup'].append({
+                "name": w_row['Exercise Name'],
+                "benefit": "Warmup",
+                "steps": str(w_row.get('Steps to perform', '')).split('\n'),
+                "sets": resolve_volume(w_row.get('Sets'), "1"),
+                "reps": resolve_volume(w_row.get('Reps'), "2-3 mins"), 
+                "met_value": float(w_row.get('MET value', 4.0)),
+                "safety_cue": "Start slow"
+            })
 
-        # B. Upper Body Dynamic (Reps/Time)
-        wp_upper = warmup_base[
-            (warmup_base['Body Region'].str.contains('Upper|Arm|Shoulder|Chest|Back', case=False, na=False)) &
-            (warmup_base['Tags'].str.contains('Dynamic|Mobility', case=False, na=False))
-        ]
-        if wp_upper.empty: wp_upper = warmup_base 
-        w2 = wp_upper.sample(1).iloc[0]
-        day_plan['warmup'].append({
-            "name": w2['Exercise Name'],
-            "benefit": "Upper Body Mobility",
-            "steps": str(w2.get('Steps to perform', '')).split('\n'),
-            "sets": "1",
-            "reps": "10-15 reps", # Dynamic movements usually reps or short time
-            "met_value": float(w2.get('MET value', 3.0)),
-            "safety_cue": "Controlled motion"
-        })
-
-        # C. Lower Body Dynamic (Reps/Time)
-        wp_lower = warmup_base[
-            (warmup_base['Body Region'].str.contains('Lower|Leg|Hip|Glute', case=False, na=False)) &
-            (warmup_base['Tags'].str.contains('Dynamic|Mobility', case=False, na=False))
-        ]
-        if wp_lower.empty: wp_lower = warmup_base
-        w3 = wp_lower.sample(1).iloc[0]
-        day_plan['warmup'].append({
-            "name": w3['Exercise Name'],
-            "benefit": "Lower Body Mobility",
-            "steps": str(w3.get('Steps to perform', '')).split('\n'),
-            "sets": "1",
-            "reps": "10-15 reps",
-            "met_value": float(w3.get('MET value', 3.0)),
-            "safety_cue": "Full range of motion"
-        })
-
-        # --- 2. MAIN WORKOUT (No Repetitive Exercises across week) ---
+        # --- 2. MAIN WORKOUT ---
         if "Cardio" in day_type:
-            # Cardio Focused Day
-            pool = cardio_pool[~cardio_pool['Exercise Name'].isin(used_exercise_names)]
-            if pool.empty: pool = cardio_pool # Reset if exhausted
-            
-            selection = pool.sample(min(max_main, len(pool)))
-            
-            for _, row in selection.iterrows():
-                used_exercise_names.add(row['Exercise Name'])
+            # Cardio Day
+            m_selection = get_fuzzy_unique(cardio_pool, max_main, used_exercise_names)
+            for row in m_selection:
                 is_run = 'run' in row['Exercise Name'].lower() or 'jog' in row['Exercise Name'].lower()
-                
+                final_sets = resolve_volume(row.get('Sets'), "1" if is_run else "3")
+                if is_run: final_reps = "20-30 mins"
+                else: final_reps = resolve_volume(row.get('Reps'), "30-45 sec")
+
                 day_plan['main_workout'].append({
                     "name": row['Exercise Name'],
                     "benefit": "Cardiovascular Endurance",
                     "steps": str(row.get('Steps to perform', '')).split('\n'),
-                    "sets": "1" if is_run else "3",
-                    "reps": "20-30 mins" if is_run else "30-45 sec", # Interval vs Steady State
+                    "sets": final_sets,
+                    "reps": final_reps,
                     "rest": "None" if is_run else "30s",
                     "met_value": float(row.get('MET value', 6.0)),
                     "safety_cue": row.get('Safety cue', 'Pace yourself')
                 })
         else:
-            # Strength Focused Day
-            pool = strength_pool[~strength_pool['Exercise Name'].isin(used_exercise_names)]
+            # Strength Day
+            # Filter pool by body region if needed
+            pool = strength_pool
+            if "Upper" in day_type: 
+                pool = strength_pool[strength_pool['Body Region'].str.contains('Upper', case=False, na=False)]
+            elif "Lower" in day_type: 
+                pool = strength_pool[strength_pool['Body Region'].str.contains('Lower', case=False, na=False)]
             
-            # Sub-filter based on split
-            if "Upper" in day_type:
-                sub_pool = pool[pool['Body Region'].str.contains('Upper', case=False, na=False)]
-            elif "Lower" in day_type:
-                sub_pool = pool[pool['Body Region'].str.contains('Lower', case=False, na=False)]
-            else:
-                sub_pool = pool # Full body
+            if pool.empty: pool = strength_pool # Fallback
+
+            m_selection = get_fuzzy_unique(pool, max_main, used_exercise_names)
             
-            # Fallback
-            if sub_pool.empty: sub_pool = strength_pool 
-            
-            selection = sub_pool.sample(min(max_main, len(sub_pool)))
-            
-            for _, row in selection.iterrows():
-                used_exercise_names.add(row['Exercise Name'])
-                # Check if it's a cardio exercise that slipped into strength pool (e.g. Jumping Jacks)
+            for row in m_selection:
                 is_cardio_move = 'cardio' in str(row['Primary Category']).lower() or 'jump' in row['Exercise Name'].lower()
                 
-                if is_cardio_move:
-                    curr_reps = "30-45 sec"
-                    curr_sets = "3"
-                else:
-                    curr_reps = t_reps
-                    curr_sets = t_sets
+                algo_reps = "30-45 sec" if is_cardio_move else t_reps
+                algo_sets = "3" if is_cardio_move else t_sets
+
+                final_sets = resolve_volume(row.get('Sets'), algo_sets)
+                final_reps = resolve_volume(row.get('Reps'), algo_reps)
 
                 day_plan['main_workout'].append({
                     "name": row['Exercise Name'],
                     "benefit": row.get('Health benefit', 'Strength'),
                     "steps": str(row.get('Steps to perform', '')).split('\n'),
-                    "sets": curr_sets,
-                    "reps": curr_reps,
+                    "sets": final_sets,
+                    "reps": final_reps,
                     "rest": t_rest,
                     "met_value": float(row.get('MET value', 3.5)),
                     "safety_cue": row.get('Safety cue', 'Maintain form')
                 })
 
-        # --- 3. COOLDOWN (Strictly Static / Seconds) ---
-        # 2 Exercises strictly from cooldown_pool
-        cd_pool = cooldown_pool[~cooldown_pool['Exercise Name'].isin(used_exercise_names)]
-        if cd_pool.empty: cd_pool = cooldown_pool
+        # --- 3. COOLDOWN (Strictly Tagged Cooldown) ---
+        c_selection = get_fuzzy_unique(cooldown_pool, 2, used_exercise_names)
         
-        selection_cd = cd_pool.sample(min(2, len(cd_pool)))
-        
-        for _, row in selection_cd.iterrows():
-            used_exercise_names.add(row['Exercise Name'])
+        for row in c_selection:
             day_plan['cooldown'].append({
                 "name": row['Exercise Name'],
-                "benefit": "Static Flexibility & Recovery",
+                "benefit": "Recovery",
                 "steps": str(row.get('Steps to perform', '')).split('\n'),
-                "sets": "1",
-                "reps": "30-45 sec", # Strictly seconds for static
+                "sets": resolve_volume(row.get('Sets'), "1"),
+                "reps": resolve_volume(row.get('Reps'), "30-45 sec"),
                 "met_value": float(row.get('MET value', 1.5)),
-                "safety_cue": "Breathe deeply, do not bounce"
+                "safety_cue": "Relax"
             })
 
         schedule_output[day] = day_plan
@@ -491,9 +483,9 @@ def display_interactive_workout_day(day_name: str, plan_json: dict, profile: dic
                 c1, c2, c3 = st.columns([3, 1.5, 1.5])
                 with c1:
                     st.markdown(f"**{ex['name']}**")
-                    # [FIXED] Separated Display Formatting
+                    # SEPARATED FORMATTING
                     st.markdown(f"**Sets:** {ex.get('sets', '1')}")
-                    st.markdown(f"**Reps:** {ex.get('reps', '10')}")
+                    st.markdown(f"**Target:** {ex.get('reps', '10')}")
                     
                     with st.expander("Instructions"):
                         st.write(ex.get('steps', []))
