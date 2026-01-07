@@ -646,7 +646,7 @@ with st.form("fitness_form"):
         
         st.subheader("🎯 Goals & Details")
         p_goal = st.selectbox("Primary Goal", PRIMARY_GOALS, index=PRIMARY_GOALS.index(profile.get('primary_goal', 'Weight Loss')) if 'primary_goal' in profile else 0)
-        s_goal = st.selectbox("Secondary Goal", ["None"]+SECONDARY_GOALS)
+       
         bp_opts = ["Upper Body", "Lower Body", "Core", "Full Body"]
         targets = st.multiselect("Target Focus", bp_opts, default=profile.get('target_body_parts', ["Full Body"]))
         if not targets: targets = ["Full Body"]
