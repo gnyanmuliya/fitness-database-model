@@ -672,7 +672,7 @@ with st.form("fitness_form"):
                 if not df.empty:
                     new_prof = {
                         "name": name, "age": age, "gender": gender, "weight_kg": wk, "height_cm": hc,
-                        "primary_goal": p_goal, "secondary_goal": s_goal, "target_body_parts": targets,
+                        "primary_goal": p_goal, "target_body_parts": targets,
                         "fitness_level": level, "medical_conditions": conds, "physical_limitation": lims,
                         "specific_avoidance": avoid, "days_per_week": days, "session_duration": dur,
                         "workout_location": loc, "available_equipment": eq
