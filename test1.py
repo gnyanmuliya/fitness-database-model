@@ -607,6 +607,18 @@ def generate_workout_json(df, profile):
                 w3, "1", "10-15 reps", get_dataset_rest(w3, "None"), "2-3"
             ))
 
+        # [NEW FIX] Ensure exactly 3 Warmup Exercises
+        fill_attempts = 0
+        while len(day_plan['warmup']) < 3 and fill_attempts < 20:
+            fill_attempts += 1
+            # Attempt to fill with any valid Mobility or Warmup exercise
+            fallback_w_pool = base_pool[base_pool['Primary Category'].str.contains('Warmup|Mobility|Cardio', case=False, na=False)]
+            w_fill = get_unique_exercise(fallback_w_pool, base_pool, used_exercise_names)
+            if w_fill is not None:
+                 day_plan['warmup'].append(build_exercise_dict(
+                    w_fill, "1", "2-3 mins", get_dataset_rest(w_fill, "None"), "2-3"
+                ))
+
         # --- 2. MAIN WORKOUT ---
         target_pool = strength_pool
         if "Cardio" in day_type:
@@ -671,6 +683,18 @@ def generate_workout_json(df, profile):
              day_plan['cooldown'].append(build_exercise_dict(
                 c3, "1", "Hold 30-45 sec", get_dataset_rest(c3, "None"), "1-2"
             ))
+            
+        # [NEW FIX] Ensure exactly 3 Cooldown Exercises
+        fill_attempts = 0
+        while len(day_plan['cooldown']) < 3 and fill_attempts < 20:
+            fill_attempts += 1
+            # Attempt to fill with any valid Flexibility or Cooldown exercise
+            fallback_c_pool = base_pool[base_pool['Primary Category'].str.contains('Cooldown|Flexibility|Stretch|Yoga', case=False, na=False)]
+            c_fill = get_unique_exercise(fallback_c_pool, base_pool, used_exercise_names)
+            if c_fill is not None:
+                 day_plan['cooldown'].append(build_exercise_dict(
+                    c_fill, "1", "Hold 30-45 sec", get_dataset_rest(c_fill, "None"), "1-2"
+                ))
 
         schedule_output[day] = day_plan
         
@@ -875,4 +899,3 @@ if st.session_state.all_json_plans:
         }
         js = json.dumps(final_export, indent=4)
         st.download_button("Download JSON", js, "plan.json", "application/json")
-        
